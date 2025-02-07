@@ -1,0 +1,41 @@
+service: tcs-payments
+
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: python3.9
+  environment:
+    STRIPE_SECRET_KEY: ${env:STRIPE_SECRET_KEY}
+    STRIPE_WEBHOOK_SECRET: ${env:STRIPE_WEBHOOK_SECRET}
+    HASURA_ENDPOINT: ${env:HASURA_ENDPOINT}
+    HASURA_ADMIN_SECRET: ${env:HASURA_ADMIN_SECRET}
+    ACTION_SECRET: ${env:ACTION_SECRET}
+    FRONTEND_URL: ${env:FRONTEND_URL}
+
+functions:
+  api:
+    handler: src.app.app
+    events:
+      - http:
+          path: /create-payment
+          method: POST
+      - http:
+          path: /setup-autopay
+          method: POST
+      - http:
+          path: /stripe-webhook
+          method: POST
+
+plugins:
+  - serverless-wsgi
+  - serverless-python-requirements
+
+custom:
+  wsgi:
+    app: src.app.app
+    packRequirements: false
+    serve:
+      port: 5001
+  pythonRequirements:
+    dockerizePip: true
