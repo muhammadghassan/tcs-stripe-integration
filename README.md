@@ -1,17 +1,14 @@
-Here's a comprehensive README.md:
-
-```markdown
 # TCS Payment Service
 
-A serverless payment processing service built with Python, Flask, and Stripe, deployed on AWS Lambda through the Serverless Framework. This service handles payment processing, subscription management, and credit system integration for Tiger Campus Services.
+A serverless payment processing service built with Python, Flask, and Stripe, deployed on AWS Lambda through the Serverless Framework. This service handles payment processing and credit system integration for Tiger Campus Services.
 
 ## Features
 
-- 💳 Stripe payment processing
-- 📊 Credit system management
-- 🔄 Subscription handling
-- 🪝 Webhook processing
-- 🔐 Secure API endpoints
+- 💳 Stripe payment processing with checkout sessions
+- 📊 Credit purchase system with configurable conversion rates
+- 💰 Autopay setup functionality
+- 🪝 Stripe webhook handling
+- 🔐 Secure API endpoints with action secrets
 - 📡 Hasura GraphQL integration
 
 ## Prerequisites
@@ -53,64 +50,63 @@ npm install -g serverless
 npm install --save-dev serverless-python-requirements serverless-wsgi
 ```
 
-## Configuration
+## Database Schema
 
-1. Create `.env` file in project root:
-```bash
-# Stripe Configuration
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-
-# Hasura Configuration
-HASURA_ENDPOINT=https://api.dev.tcs.tigercampus.com/v1/graphql
-HASURA_ADMIN_SECRET=your_hasura_admin_secret
-
-# Action Secret
-ACTION_SECRET=your_custom_action_secret
-
-# Business Logic Configuration
-CREDIT_CONVERSION_RATE=1
-
-# Stripe Price IDs
-STRIPE_PRICE_ID_100=price_xxx
-STRIPE_PRICE_ID_200=price_yyy
+### Clients Table
+```sql
+CREATE TABLE clients (
+    id uuid PRIMARY KEY,
+    stripe_customer_id TEXT UNIQUE,
+    email TEXT NOT NULL,
+    credits_balance NUMERIC DEFAULT 0
+);
 ```
 
-2. Create Hasura tables:
-
-### Customers Table
+### Transactions Table
 ```sql
-CREATE TABLE customers (
-    id SERIAL PRIMARY KEY,
-    stripe_customer_id TEXT UNIQUE NOT NULL,
-    credits INTEGER DEFAULT 0,
+CREATE TABLE transactions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid REFERENCES clients(id),
+    amount INTEGER NOT NULL,
+    credits_amount NUMERIC NOT NULL,
+    stripe_payment_intent_id TEXT,
+    checkout_session_id TEXT,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    receipt_url TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
-### Payments Table
+### Payment Methods Table
 ```sql
-CREATE TABLE payments (
-    id SERIAL PRIMARY KEY,
-    payment_id TEXT UNIQUE NOT NULL,
-    customer_id TEXT REFERENCES customers(stripe_customer_id),
-    status TEXT NOT NULL,
-    amount DECIMAL(10,2) NOT NULL,
-    credits INTEGER NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE payment_methods (
+    uuid uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid REFERENCES clients(id),
+    type TEXT NOT NULL,
+    auto_pay_amount NUMERIC,
+    auto_pay_day INTEGER,
+    auto_pay_enabled BOOLEAN DEFAULT false,
+    stripe_payment_method_id TEXT,
+    CONSTRAINT payment_methods_user_id_key UNIQUE (user_id)
 );
 ```
 
-### Subscriptions Table
+### System Settings Table
 ```sql
-CREATE TABLE subscriptions (
-    id SERIAL PRIMARY KEY,
-    subscription_id TEXT UNIQUE NOT NULL,
-    customer_id TEXT REFERENCES customers(stripe_customer_id),
-    status TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+CREATE TABLE system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+```
+
+### Payment Settings Table
+```sql
+CREATE TABLE payment_settings (
+    min_payment_amount INTEGER NOT NULL,
+    max_payment_amount INTEGER NOT NULL
 );
 ```
 
@@ -121,7 +117,8 @@ tcs-payment-service/
 ├── node_modules/
 ├── src/
 │   ├── __init__.py
-│   └── app.py
+│   ├── action_handler.py
+│   └── webhook_handler.py
 ├── serverless.yml
 ├── requirements.txt
 ├── package.json
@@ -131,27 +128,65 @@ tcs-payment-service/
 
 ## API Endpoints
 
-### Stripe Webhook Handler
-- **URL**: `/webhook`
-- **Method**: POST
-- **Purpose**: Processes Stripe webhook events (payments, subscriptions)
-
-### Payment Actions
+### Payment Processing
 - **URL**: `/create-payment`
 - **Method**: POST
-- **Headers**: `Action-Secret`
-- **Purpose**: Creates new payment intents
+- **Headers**: `ACTION-SECRET`
+- **Purpose**: Creates Stripe checkout session for credit purchases
+- **Request Body**:
+```json
+{
+    "input": {
+        "amount": 100,
+        "email": "user@example.com"
+    },
+    "session_variables": {
+        "x-hasura-user-id": "uuid"
+    }
+}
+```
 
-### Subscription Actions
-- **URL**: `/setup-subscription`
+### Autopay Setup
+- **URL**: `/setup-autopay`
 - **Method**: POST
-- **Headers**: `Action-Secret`
-- **Purpose**: Sets up new subscriptions
+- **Headers**: `ACTION-SECRET`
+- **Purpose**: Sets up recurring payments
+- **Request Body**:
+```json
+{
+    "input": {
+        "amount": 100,
+        "day_of_month": 1
+    },
+    "session_variables": {
+        "x-hasura-user-id": "uuid"
+    }
+}
+```
 
-- **URL**: `/get-subscription`
+### Webhook Handler
+- **URL**: `/stripe-webhook`
 - **Method**: POST
-- **Headers**: `Action-Secret`
-- **Purpose**: Retrieves subscription status
+- **Purpose**: Processes Stripe webhook events
+- **Security**: Validates Stripe signature
+
+## Environment Variables
+
+```bash
+# Stripe Configuration
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+
+# Hasura Configuration
+HASURA_ENDPOINT=https://your-hasura-endpoint/v1/graphql
+HASURA_ADMIN_SECRET=your-hasura-admin-secret
+
+# Frontend Configuration
+FRONTEND_URL=https://your-frontend-url
+
+# Action Security
+ACTION_SECRET=your-action-secret
+```
 
 ## Deployment
 
@@ -174,7 +209,7 @@ serverless wsgi serve
 
 2. Test webhook handling using Stripe CLI:
 ```bash
-stripe listen --forward-to localhost:5000/webhook
+stripe listen --forward-to localhost:5000/stripe-webhook
 ```
 
 ## Testing
@@ -189,6 +224,14 @@ pip install pytest pytest-mock
 pytest
 ```
 
+## Security Implementations
+
+1. Webhook signature verification
+2. Action secret validation
+3. Payment amount validation
+4. Secure customer data handling
+5. Transaction status tracking
+
 ## Monitoring
 
 - Monitor Lambda functions in AWS CloudWatch
@@ -198,26 +241,25 @@ pytest
 serverless logs -f app
 ```
 
-## Security Considerations
-
-- Store sensitive data in AWS Secrets Manager
-- Validate Stripe webhook signatures
-- Use environment variables for secrets
-- Implement rate limiting
-- Regular security audits
-- Keep dependencies updated
-
 ## Common Issues
 
-1. **Deployment Failures**
-   - Ensure AWS credentials are configured
-   - Check Lambda function permissions
-   - Verify memory/timeout settings
-
-2. **Webhook Issues**
+1. **Webhook Processing Issues**
    - Verify Stripe webhook secret
-   - Check webhook URL accessibility
+   - Check webhook signature headers
    - Monitor webhook logs
+   - Verify transaction status updates
+
+2. **Payment Processing Issues**
+   - Check Stripe API key configuration
+   - Verify payment amount validation
+   - Monitor checkout session creation
+   - Check credit conversion calculations
+
+3. **Database Integration Issues**
+   - Verify Hasura endpoint configuration
+   - Check GraphQL mutation responses
+   - Monitor transaction records
+   - Verify credit balance updates
 
 ## Contributing
 
@@ -227,10 +269,6 @@ serverless logs -f app
 4. Push to branch
 5. Create Pull Request
 
-## License
-
-[Your License Here]
-
 ## Support
 
 For support:
@@ -238,9 +276,17 @@ For support:
 - Contact development team
 - Check documentation
 
-## Authors
+## License
 
-[Your Name/Team]
-```
+[Your License Here]
 
-Would you like me to explain any specific section in more detail or add additional information?
+## Documentation Updates
+
+Last updated: February 2025
+Version: 1.0.0
+
+For more detailed documentation:
+- Stripe API Documentation
+- Hasura Documentation
+- AWS Lambda Documentation
+- Serverless Framework Documentation
